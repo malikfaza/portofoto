@@ -19,11 +19,10 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- KONFIGURASI FIREBASE (SUDAH DIISI OTOMATIS) ---
-        // Ini adalah kunci agar database nyambung saat di-deploy
+        // --- 1. KONFIGURASI FIREBASE ---
         const firebaseConfig = {
             apiKey: "AIzaSyAAHJUfWFvnAnhaPlpzjWFfwmACutmL17c",
             authDomain: "porto-9b4a4.firebaseapp.com",
@@ -34,568 +33,175 @@
             measurementId: "G-GQ9LE3M62K"
         };
 
-        // Initialize App
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        
-        // Gunakan App ID default agar data tidak terpencar
+        // --- 2. INISIALISASI & GLOBAL STATE ---
+        let app, auth, db;
+        let isOnline = false;
+        let currentUser = null;
+        let allItems = [];
         const appId = 'default-app-id';
 
-        // Global State
-        let currentUser = null;
-        let isAdminMode = false;
-        let isClientLoggedIn = false;
-        let currentEditId = null;
-        let allItems = []; 
-        
-        // Temp Storage Base64
-        let tempBeforeBase64 = "";
-        let tempAfterBase64 = "";
-
-        // Auth Logic
-        const initAuth = async () => {
-            try {
-                // Coba login dengan token custom jika ada (untuk lingkungan editor)
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    // Login anonim untuk lingkungan deploy
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Auth Error:", error);
-                showToast("Gagal koneksi database. Cek internet.", "error");
-            }
+        // Helper: Tampilkan pesan toast
+        window.showToast = (message, type = 'success') => {
+            const toast = document.createElement('div');
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white transform transition-all duration-300 translate-y-10 opacity-0 z-[100] ${type === 'error' ? 'bg-red-600' : 'bg-green-600'}`;
+            toast.innerText = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.classList.remove('translate-y-10', 'opacity-0'), 10);
+            setTimeout(() => {
+                toast.classList.add('translate-y-10', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
         };
 
-        initAuth();
+        // --- 3. AUTH LOGIC (DENGAN FALLBACK) ---
+        async function startApp() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                
+                await signInAnonymously(auth);
+                isOnline = true;
+                
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (user) setupDataListener();
+                });
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                setupRealtimeListener();
+            } catch (error) {
+                console.error("Firebase Error:", error);
+                let msg = "Mode Offline Aktif";
+                if(error.code === 'auth/unauthorized-domain') msg = "Domain belum diizinkan di Firebase Console";
+                window.showToast(msg, "error");
+                loadStaticData(); // Tetap load data statis biar web gak kosong
             }
-        });
+        }
 
-        // --- Firestore Logic ---
-        function setupRealtimeListener() {
+        startApp();
+
+        // --- 4. DATA LISTENER ---
+        function setupDataListener() {
             if (!currentUser) return;
             const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
             
-            onSnapshot(colRef, (snapshot) => {
-                allItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                
-                // Pisahkan Hero (Atas) dan Gallery (Bawah)
-                const heroItems = allItems.filter(item => item.section === 'hero');
-                const galleryItems = allItems.filter(item => item.section !== 'hero'); 
+            // Timeout penjaga: Jika 5 detik gak ada data, load statis
+            const safetyTimer = setTimeout(() => {
+                if (allItems.length === 0) loadStaticData();
+            }, 5000);
 
-                renderHero(heroItems);
-                renderGallery(galleryItems);
-            }, (error) => {
-                console.error("Error fetching data:", error);
-                // Jika error permission atau kosong, tampilkan fallback visual
-                renderHero([]);
-                renderGallery([]);
+            onSnapshot(colRef, (snapshot) => {
+                clearTimeout(safetyTimer);
+                allItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                refreshUI(allItems);
+            }, (err) => {
+                console.error(err);
+                loadStaticData();
             });
         }
 
-        async function saveItem(data) {
-            if (!currentUser) {
-                showToast("Koneksi terputus, refresh halaman.", "error");
+        // --- 5. DATA STATIS (FALLBACK) ---
+        function loadStaticData() {
+            // Data ini muncul kalau database error/kosong
+            const staticData = [
+                { section: 'hero', title: "Potret Studio", category: "Retouch", isStatic: true, after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=800", before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=800" },
+                { section: 'hero', title: "Urban City", category: "Color", isStatic: true, after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=800", before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?w=800" },
+                { section: 'gallery', title: "Wedding Moment", category: "Wedding", after: "https://images.unsplash.com/photo-1519741497674-611481863552?w=600", before: "https://images.unsplash.com/photo-1511285560982-1351cdeb9821?w=600" },
+                { section: 'gallery', title: "Beauty Portrait", category: "Retouch", after: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=600", before: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600" },
+                { section: 'gallery', title: "Nature Landscape", category: "Nature", after: "https://images.unsplash.com/photo-1472214103451-9374bd1c798e?w=600", before: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600" }
+            ];
+            refreshUI(staticData);
+        }
+
+        function refreshUI(items) {
+            // Pisahkan Hero dan Gallery
+            const heroItems = items.filter(i => i.section === 'hero');
+            const galleryItems = items.filter(i => i.section !== 'hero');
+            
+            // Render (Fungsi render ada di script bawah)
+            if(window.renderHero) window.renderHero(heroItems);
+            if(window.renderGallery) window.renderGallery(galleryItems);
+        }
+
+        // --- 6. ADMIN ACTIONS (Export ke Window agar bisa dipanggil HTML) ---
+        window.saveItemFirebase = async (data, editId) => {
+            if (!isOnline || !currentUser) {
+                window.showToast("Mode Offline: Data tidak tersimpan ke server", "error");
                 return;
             }
-
-            // Validasi ukuran (max ~900KB)
-            const sizeEstimate = JSON.stringify(data).length;
-            if (sizeEstimate > 900000) { 
-                showToast("Gambar terlalu besar! Gunakan gambar lain.", "error");
-                return;
-            }
-
             try {
-                const btn = document.getElementById('btn-save');
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Menyimpan...';
-                btn.disabled = true;
-
                 const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
-
-                if (currentEditId) {
-                    await updateDoc(doc(colRef, currentEditId), data);
-                    showToast("Berhasil diperbarui!", "success");
+                if (editId) {
+                    await updateDoc(doc(colRef, editId), data);
+                    window.showToast("Update Berhasil!");
                 } else {
                     await addDoc(colRef, { ...data, createdAt: Date.now() });
-                    showToast("Berhasil ditambahkan!", "success");
+                    window.showToast("Simpan Berhasil!");
                 }
-                closeModal();
+                window.closeModal();
             } catch (e) {
-                console.error(e);
-                showToast("Gagal menyimpan. Coba lagi.", "error");
-            } finally {
-                const btn = document.getElementById('btn-save');
-                if(btn) {
-                    btn.innerHTML = 'Simpan';
-                    btn.disabled = false;
-                }
+                window.showToast("Gagal simpan: " + e.message, "error");
             }
-        }
+        };
 
-        async function deleteItem(id) {
-            if (!currentUser || !confirm("Yakin hapus item ini?")) return;
+        window.deleteItemFirebase = async (id) => {
+            if (!isOnline) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_items', id));
-                showToast("Item dihapus.", "success");
+                window.showToast("Terhapus!");
             } catch (e) {
-                showToast("Gagal menghapus.", "error");
+                window.showToast("Gagal hapus", "error");
             }
-        }
-
-        // --- Image Handler (Resize & Base64) ---
-        window.handleFileSelect = (file, type) => {
-            if (!file || !file.type.match('image.*')) {
-                showToast("Hanya file gambar!", "error");
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = (e) => {
-                const img = new Image();
-                img.src = e.target.result;
-                img.onload = () => {
-                    // Kompresi Gambar
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    const MAX_WIDTH = 800; // Resize ke 800px biar ringan
-                    let width = img.width;
-                    let height = img.height;
-
-                    if (width > MAX_WIDTH) {
-                        height *= MAX_WIDTH / width;
-                        width = MAX_WIDTH;
-                    }
-
-                    canvas.width = width;
-                    canvas.height = height;
-                    ctx.drawImage(img, 0, 0, width, height);
-
-                    // Konversi ke JPEG Quality 0.7
-                    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-
-                    if (type === 'before') {
-                        tempBeforeBase64 = dataUrl;
-                        document.getElementById('preview-before').src = dataUrl;
-                        document.getElementById('preview-before').classList.remove('hidden');
-                        document.getElementById('placeholder-before').classList.add('hidden');
-                    } else {
-                        tempAfterBase64 = dataUrl;
-                        document.getElementById('preview-after').src = dataUrl;
-                        document.getElementById('preview-after').classList.remove('hidden');
-                        document.getElementById('placeholder-after').classList.add('hidden');
-                    }
-                }
-            };
         };
-
-        // --- UI Setup ---
-        window.setupDropZone = (zoneId, type) => {
-            const zone = document.getElementById(zoneId);
-            const input = document.getElementById(zoneId + '-input');
-            
-            zone.onclick = () => input.click();
-            input.onchange = (e) => window.handleFileSelect(e.target.files[0], type);
-
-            zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('border-accent-cyan'); };
-            zone.ondragleave = (e) => { e.preventDefault(); zone.classList.remove('border-accent-cyan'); };
-            zone.ondrop = (e) => {
-                e.preventDefault();
-                zone.classList.remove('border-accent-cyan');
-                if (e.dataTransfer.files[0]) window.handleFileSelect(e.dataTransfer.files[0], type);
-            };
-            
-            zone.addEventListener('paste', (e) => {
-                const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-                for (let item of items) {
-                    if (item.kind === 'file' && item.type.includes('image')) {
-                        window.handleFileSelect(item.getAsFile(), type);
-                    }
-                }
-            });
-        };
-
-        // --- Import/Export ---
-        window.exportData = () => {
+        
+        window.exportDataJson = () => {
             const dataStr = JSON.stringify(allItems, null, 2);
             const blob = new Blob([dataStr], { type: "application/json" });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `porto_backup_${new Date().toISOString().slice(0,10)}.json`;
+            link.download = `backup_porto.json`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
         };
 
-        window.triggerImport = () => document.getElementById('file-input').click();
-        
-        window.handleFileImport = (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+        window.importDataJson = (file) => {
             const reader = new FileReader();
             reader.onload = async (ev) => {
                 try {
                     const data = JSON.parse(ev.target.result);
-                    if (!Array.isArray(data)) throw new Error("Format salah");
-                    
                     const batch = writeBatch(db);
                     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
-                    
-                    data.forEach((item, idx) => {
-                        const { id, ...cleanData } = item;
+                    data.forEach((item, i) => {
+                        const { id, ...clean } = item;
                         const newRef = doc(colRef);
-                        batch.set(newRef, { ...cleanData, createdAt: Date.now() + idx });
+                        batch.set(newRef, { ...clean, createdAt: Date.now() + i });
                     });
-                    
                     await batch.commit();
-                    showToast("Import Berhasil!", "success");
-                } catch (err) {
-                    showToast("Gagal Import: " + err.message, "error");
-                }
+                    window.showToast("Import Sukses!");
+                } catch(e) { window.showToast("Gagal Import", "error"); }
             };
             reader.readAsText(file);
         };
 
-        // --- Rendering ---
-
-        // 1. Render Hero (Top Section)
-        function renderHero(items) {
-            const container = document.getElementById('hero-grid');
-            let displayItems = items;
-            
-            // Placeholder jika kosong (Visual Only)
-            if (items.length === 0) {
-                displayItems = [
-                    {
-                        isStatic: true, title: "Potret Studio", category: "Retouch",
-                        after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop",
-                        before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=800&auto=format&fit=crop"
-                    },
-                    {
-                        isStatic: true, title: "Urban City", category: "Color Grade",
-                        after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop",
-                        before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=800&auto=format&fit=crop"
-                    }
-                ];
-            }
-
-            container.innerHTML = '';
-            
-            displayItems.forEach((item, index) => {
-                const card = document.createElement('div');
-                card.className = "bg-white dark:bg-dark-card border border-gray-200 dark:border-white/10 p-2 rounded-2xl shadow-2xl relative group";
-                const gradientClass = index % 2 === 0 ? "from-accent-cyan to-accent-purple" : "from-accent-purple to-accent-red";
-                const badgeColor = index % 2 === 0 ? "text-accent-cyan bg-accent-cyan/10" : "text-accent-red bg-accent-red/10";
-                const badgeText = index % 2 === 0 ? "bg-accent-cyan/80" : "bg-accent-red/80";
-
-                let adminControls = '';
-                if (isAdminMode) {
-                    const editAction = item.isStatic ? 
-                        `window.openStaticHeroEdit(${index}, '${item.title}', '${item.category}', '${item.before}', '${item.after}')` : 
-                        `window.openEditModal('${item.id}', 'hero')`;
-                    
-                    const deleteBtn = item.isStatic ? '' : `<button onclick="window.deleteItemWrapper('${item.id}')" class="bg-red-600 hover:bg-red-700 text-white p-1.5 rounded shadow"><i class="fas fa-trash text-xs"></i></button>`;
-
-                    adminControls = `
-                        <div class="absolute top-4 right-4 z-50 flex gap-2">
-                             <button onclick="${editAction}" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded shadow flex items-center gap-1 text-xs"><i class="fas fa-edit"></i> Edit</button>
-                            ${deleteBtn}
-                        </div>`;
-                }
-
-                card.innerHTML = `
-                    <div class="absolute -inset-1 bg-gradient-to-r ${gradientClass} rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500"></div>
-                    <div class="relative bg-white dark:bg-dark-card rounded-xl p-1">
-                        ${adminControls}
-                        <div class="flex justify-between items-center mb-3 px-2 pt-2">
-                            <h3 class="font-serif italic text-xl dark:text-gray-200">${item.title}</h3>
-                            <span class="text-xs font-bold px-2 py-1 rounded ${badgeColor} uppercase tracking-wider">${item.category}</span>
-                        </div>
-                        <div class="img-comp-container h-[350px] md:h-[450px]">
-                            <div class="img-comp-img w-full">
-                                <img src="${item.after}" alt="After">
-                                <span class="absolute bottom-4 right-4 ${badgeText} backdrop-blur text-white px-2 py-1 text-xs rounded">AFTER</span>
-                            </div>
-                            <div class="img-comp-img img-comp-overlay w-full">
-                                <img src="${item.before}" alt="Before">
-                                <span class="absolute bottom-4 left-4 bg-black/50 backdrop-blur text-white px-2 py-1 text-xs rounded">BEFORE</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                container.appendChild(card);
-            });
-
-            // Re-init slider
-            setTimeout(() => {
-                document.querySelectorAll('.img-comp-slider').forEach(e => e.remove());
-                document.querySelectorAll('.img-comp-overlay').forEach(e => e.classList.remove('initialized'));
-                initComparisons();
-            }, 100);
-        }
-
-        // 2. Render Gallery (Bottom Grid)
-        function renderGallery(items) {
-            const container = document.getElementById('gallery-container');
-            container.innerHTML = '';
-
-            if (items.length === 0) {
-                container.innerHTML = `<div class="col-span-full text-center py-10 text-gray-400">Belum ada data galeri.</div>`;
-                return;
-            }
-
-            items.forEach(item => {
-                const card = document.createElement('div');
-                card.className = "group relative rounded-xl overflow-hidden cursor-pointer h-48 md:h-64 shadow-lg border border-gray-200 dark:border-white/10 select-none";
-                card.onclick = function() { this.classList.toggle('active'); };
-                
-                let controls = '';
-                if (isAdminMode) {
-                    controls = `
-                        <div class="absolute top-2 left-2 z-20 flex gap-2" onclick="event.stopPropagation()">
-                            <button onclick="window.openEditModal('${item.id}', 'gallery')" class="bg-blue-600 hover:bg-blue-700 text-white p-1.5 rounded shadow"><i class="fas fa-edit text-xs"></i></button>
-                            <button onclick="window.deleteItemWrapper('${item.id}')" class="bg-red-600 hover:bg-red-700 text-white p-1.5 rounded shadow"><i class="fas fa-trash text-xs"></i></button>
-                        </div>`;
-                }
-
-                card.innerHTML = `
-                    ${controls}
-                    <div class="absolute inset-0 bg-gray-900 gallery-image-container">
-                        <img src="${item.after || ''}" class="w-full h-full object-cover transition-opacity duration-300 img-after" onerror="this.src='https://via.placeholder.com/400?text=Error'">
-                        <img src="${item.before || ''}" class="w-full h-full object-cover absolute top-0 left-0 transition-opacity duration-300 opacity-0 img-before" onerror="this.src='https://via.placeholder.com/400?text=Error'">
-                    </div>
-                    <div class="absolute bottom-0 left-0 w-full bg-gradient-to-t from-dark-base to-transparent p-3 translate-y-0 transition duration-300 overlay-info">
-                        <p class="text-white text-sm font-bold truncate">${item.title}</p>
-                        <p class="text-accent-cyan text-xs">${item.category}</p>
-                    </div>
-                    <div class="absolute top-2 right-2 bg-white/10 backdrop-blur px-2 py-1 rounded text-[10px] text-white border border-white/20 pointer-events-none transition-opacity duration-300 status-badge">
-                        Tap to Compare
-                    </div>
-                `;
-                container.appendChild(card);
-            });
-        }
-
-        // --- Admin Functions ---
-        window.requestAdmin = () => {
-            if (isClientLoggedIn) {
-                window.toggleAdminPanel();
-            } else {
-                document.getElementById('login-modal').classList.remove('hidden');
-                document.getElementById('admin-pass').focus();
-            }
-        };
-
-        window.checkLogin = (e) => {
-            e.preventDefault();
-            const pass = document.getElementById('admin-pass').value;
-            if (pass === 'malikfaza99') {
-                isClientLoggedIn = true;
-                document.getElementById('login-modal').classList.add('hidden');
-                document.getElementById('admin-pass').value = '';
-                window.toggleAdminPanel();
-                showToast("Login Admin Berhasil", "success");
-            } else {
-                showToast("Password Salah!", "error");
-            }
-        };
-
-        window.togglePasswordVisibility = () => {
-            const input = document.getElementById('admin-pass');
-            const icon = document.getElementById('eye-icon');
-            if (input.type === 'password') {
-                input.type = 'text'; icon.classList.replace('fa-eye', 'fa-eye-slash');
-            } else {
-                input.type = 'password'; icon.classList.replace('fa-eye-slash', 'fa-eye');
-            }
-        };
-
-        window.closeLoginModal = () => document.getElementById('login-modal').classList.add('hidden');
-
-        window.toggleAdminPanel = () => {
-            isAdminMode = !isAdminMode;
-            const adminMenu = document.getElementById('navbar-admin-menu');
-            const adminToggleBtn = document.getElementById('admin-toggle-btn');
-            
-            if (isAdminMode) {
-                adminMenu.classList.remove('hidden');
-                adminToggleBtn.classList.add('text-accent-cyan');
-            } else {
-                adminMenu.classList.add('hidden');
-                adminToggleBtn.classList.remove('text-accent-cyan');
-            }
-            
-            // Re-render
-            const heroItems = allItems.filter(item => item.section === 'hero');
-            const galleryItems = allItems.filter(item => item.section !== 'hero');
-            renderHero(heroItems);
-            renderGallery(galleryItems);
-        };
-
-        // --- Modal Helpers ---
-        window.openStaticHeroEdit = (index, title, cat, before, after) => {
-            currentEditId = null;
-            document.getElementById('modal-title').innerText = "Edit Hero Section";
-            document.getElementById('inp-title').value = title;
-            document.getElementById('inp-category').value = cat;
-            document.getElementById('inp-section').value = 'hero';
-            
-            tempBeforeBase64 = before;
-            tempAfterBase64 = after;
-            
-            document.getElementById('preview-before').src = before;
-            document.getElementById('preview-before').classList.remove('hidden');
-            document.getElementById('placeholder-before').classList.add('hidden');
-            document.getElementById('preview-after').src = after;
-            document.getElementById('preview-after').classList.remove('hidden');
-            document.getElementById('placeholder-after').classList.add('hidden');
-            
-            document.getElementById('data-modal').classList.remove('hidden');
-        }
-
-        window.openAddModal = () => {
-            currentEditId = null;
-            tempBeforeBase64 = ""; tempAfterBase64 = "";
-            document.getElementById('modal-title').innerText = "Tambah Foto";
-            document.getElementById('item-form').reset();
-            document.getElementById('inp-section').value = "gallery";
-            resetPreviews();
-            document.getElementById('data-modal').classList.remove('hidden');
-        };
-
-        window.openEditModal = (id, sectionType) => {
-            currentEditId = id;
-            const item = allItems.find(i => i.id === id);
-            if (!item) return;
-            
-            document.getElementById('modal-title').innerText = "Edit Foto";
-            document.getElementById('inp-title').value = item.title;
-            document.getElementById('inp-category').value = item.category;
-            document.getElementById('inp-section').value = item.section || 'gallery';
-            
-            tempBeforeBase64 = item.before;
-            tempAfterBase64 = item.after;
-            
-            setPreview('before', item.before);
-            setPreview('after', item.after);
-            
-            document.getElementById('data-modal').classList.remove('hidden');
-        };
-
-        window.closeModal = () => document.getElementById('data-modal').classList.add('hidden');
-        window.deleteItemWrapper = (id) => deleteItem(id);
-        
-        function resetPreviews() {
-            ['before', 'after'].forEach(type => {
-                document.getElementById(`preview-${type}`).classList.add('hidden');
-                document.getElementById(`placeholder-${type}`).classList.remove('hidden');
-            });
-        }
-        
-        function setPreview(type, src) {
-            if(src) {
-                document.getElementById(`preview-${type}`).src = src;
-                document.getElementById(`preview-${type}`).classList.remove('hidden');
-                document.getElementById(`placeholder-${type}`).classList.add('hidden');
-            } else {
-                document.getElementById(`preview-${type}`).classList.add('hidden');
-                document.getElementById(`placeholder-${type}`).classList.remove('hidden');
-            }
-        }
-
-        window.removeImage = (type, e) => {
-            e.stopPropagation();
-            if(type === 'before') tempBeforeBase64 = "";
-            else tempAfterBase64 = "";
-            setPreview(type, null);
-        };
-
-        window.handleSubmit = (e) => {
-            e.preventDefault();
-            if(!tempBeforeBase64 || !tempAfterBase64) {
-                showToast("Upload kedua foto dulu!", "error");
-                return;
-            }
-            saveItem({
-                title: document.getElementById('inp-title').value,
-                category: document.getElementById('inp-category').value,
-                section: document.getElementById('inp-section').value,
-                before: tempBeforeBase64,
-                after: tempAfterBase64
-            });
-        };
-
-        function showToast(msg, type) {
-            const toast = document.createElement('div');
-            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white transform transition-all duration-300 translate-y-10 opacity-0 z-[100] ${type==='error'?'bg-red-600':'bg-green-600'}`;
-            toast.innerText = msg;
-            document.body.appendChild(toast);
-            setTimeout(()=>toast.classList.remove('translate-y-10','opacity-0'), 10);
-            setTimeout(()=>{
-                toast.classList.add('translate-y-10','opacity-0');
-                setTimeout(()=>toast.remove(), 300);
-            }, 3000);
-        }
-
-        window.onload = () => {
-            setupDropZone('dropzone-before', 'before');
-            setupDropZone('dropzone-after', 'after');
-        };
-
-    </script>
-    
-    <!-- Tailwind Config -->
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        dark: { base: '#000e1e', card: '#021227', border: '#1e293b' },
-                        light: { base: '#fdfbf7', card: '#ffffff', text: '#4b5563' },
-                        accent: { cyan: '#06b6d4', purple: '#8b5cf6', red: '#f43f5e' }
-                    },
-                    fontFamily: { sans: ['Outfit', 'sans-serif'], serif: ['Playfair Display', 'serif'] }
-                }
-            }
-        }
     </script>
 
+    <!-- Style One Click Interaction -->
     <style>
-        .img-comp-container { position: relative; height: 400px; overflow: hidden; border-radius: 1rem; user-select: none; touch-action: none; }
+        .img-comp-container { position: relative; height: 400px; overflow: hidden; border-radius: 1rem; user-select: none; }
         .img-comp-img { position: absolute; width: auto; height: 100%; overflow: hidden; top: 0; left: 0; }
         .img-comp-img img { display: block; height: 100%; object-fit: cover; }
         .img-comp-slider {
             position: absolute; z-index: 9; cursor: ew-resize; width: 40px; height: 40px;
             background-color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-            box-shadow: 0 0 15px rgba(0,0,0,0.5); transition: transform 0.1s;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5);
         }
-        .img-comp-slider:active { transform: scale(1.1); }
-        .img-comp-slider::before { content: '\f337'; font-family: 'Font Awesome 6 Free'; font-weight: 900; color: #000; font-size: 14px; }
-        
-        .text-gradient { background-clip: text; -webkit-background-clip: text; color: transparent; background-image: linear-gradient(to right, #06b6d4, #8b5cf6, #f43f5e); }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        
-        .drop-zone { background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='10' ry='10' stroke='%239CA3AF' stroke-width='2' stroke-dasharray='6%2c 14' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e"); }
-        .drop-zone:hover { background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='10' ry='10' stroke='%2306B6D4' stroke-width='2' stroke-dasharray='6%2c 14' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e"); }
-
-        /* ONE CLICK INTERACTION STYLES */
-        .group .img-before { opacity: 0; }
-        .group .img-after { opacity: 1; }
-        .group.active .img-before { opacity: 1; }
-        .group.active .img-after { opacity: 0; }
-        .group.active .overlay-info { opacity: 0; pointer-events: none; }
-        .group.active .status-badge { content: "Original"; background: rgba(0,0,0,0.6); }
+        /* One Click Classes */
+        .click-card .img-before { opacity: 0; transition: opacity 0.3s; }
+        .click-card .img-after { opacity: 1; transition: opacity 0.3s; }
+        .click-card.active .img-before { opacity: 1; }
+        .click-card.active .img-after { opacity: 0; }
+        .click-card.active .info-badge { display: none; }
     </style>
 </head>
 <body class="bg-light-base text-gray-800 dark:bg-dark-base dark:text-gray-100 transition-colors duration-300">
@@ -603,274 +209,345 @@
     <!-- Login Modal -->
     <div id="login-modal" class="hidden fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
         <div class="bg-white dark:bg-dark-card w-full max-w-sm rounded-2xl shadow-2xl p-6 border border-gray-200 dark:border-white/10">
-            <h3 class="text-xl font-serif font-bold mb-4 text-center dark:text-white">Admin Access</h3>
+            <h3 class="text-xl font-bold mb-4 text-center">Admin Access</h3>
             <form onsubmit="checkLogin(event)" class="space-y-4">
-                <div class="relative">
-                    <input type="password" id="admin-pass" class="w-full rounded-lg bg-gray-50 dark:bg-black/20 border border-gray-300 dark:border-white/10 p-2.5 pr-10 focus:border-accent-cyan focus:ring-1 focus:ring-accent-cyan outline-none transition dark:text-white" placeholder="Masukkan Password" required>
-                    <button type="button" onclick="togglePasswordVisibility()" class="absolute right-3 top-3 text-gray-400 hover:text-accent-cyan transition">
-                        <i id="eye-icon" class="fas fa-eye"></i>
-                    </button>
-                </div>
-                <div class="flex space-x-2 pt-2">
-                    <button type="button" onclick="closeLoginModal()" class="flex-1 px-4 py-2 rounded-lg bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:opacity-80 transition">Batal</button>
-                    <button type="submit" class="flex-1 px-4 py-2 rounded-lg bg-accent-cyan text-white font-medium hover:brightness-110 transition shadow-lg shadow-accent-cyan/30">Login</button>
+                <input type="password" id="admin-pass" class="w-full rounded-lg bg-gray-50 border p-2.5" placeholder="Password" required>
+                <div class="flex space-x-2">
+                    <button type="button" onclick="closeLoginModal()" class="flex-1 px-4 py-2 bg-gray-200 rounded-lg">Batal</button>
+                    <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg">Login</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- Edit/Add Modal -->
+    <!-- Edit Modal -->
     <div id="data-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-y-auto">
-        <div class="bg-white dark:bg-dark-card w-full max-w-2xl rounded-2xl shadow-2xl p-6 border border-gray-200 dark:border-white/10 my-8">
-            <div class="flex justify-between items-center mb-6">
-                <h3 id="modal-title" class="text-xl font-serif font-bold dark:text-white">Edit Foto</h3>
-                <button onclick="closeModal()" class="text-gray-400 hover:text-red-500 transition"><i class="fas fa-times text-xl"></i></button>
-            </div>
-            <form id="item-form" onsubmit="handleSubmit(event)" class="space-y-6">
-                <!-- Select Section: Hidden for user simplicity -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div class="md:col-span-1">
-                         <label class="block text-sm font-medium mb-1 text-gray-600 dark:text-gray-300">Tipe Tampilan</label>
-                         <select id="inp-section" class="w-full rounded-lg bg-gray-50 dark:bg-black/20 border border-gray-300 dark:border-white/10 p-2.5 outline-none focus:border-accent-cyan transition dark:text-white">
-                             <option value="gallery">Galeri (Bawah)</option>
-                             <option value="hero">Slider Besar (Atas)</option>
-                         </select>
+        <div class="bg-white dark:bg-dark-card w-full max-w-2xl rounded-2xl shadow-2xl p-6 border my-8">
+            <h3 id="modal-title" class="text-xl font-bold mb-6">Edit Foto</h3>
+            <form id="item-form" onsubmit="handleSubmit(event)" class="space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="text-sm">Judul</label>
+                        <input type="text" id="inp-title" class="w-full border p-2 rounded" required>
                     </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-sm font-medium mb-1 text-gray-600 dark:text-gray-300">Judul</label>
-                        <input type="text" id="inp-title" required class="w-full rounded-lg bg-gray-50 dark:bg-black/20 border border-gray-300 dark:border-white/10 p-2.5 outline-none focus:border-accent-cyan transition dark:text-white" placeholder="Contoh: Wedding">
+                    <div>
+                        <label class="text-sm">Kategori</label>
+                        <select id="inp-category" class="w-full border p-2 rounded">
+                            <option>Wedding</option><option>Portrait</option><option>Landscape</option><option>Urban</option>
+                            <option>Fashion</option><option>Retouch</option><option>Color Grade</option>
+                        </select>
                     </div>
                 </div>
+                <!-- Hidden Section Select -->
+                <select id="inp-section" class="hidden"><option value="gallery">Gallery</option><option value="hero">Hero</option></select>
                 
-                <div>
-                    <label class="block text-sm font-medium mb-1 text-gray-600 dark:text-gray-300">Kategori</label>
-                    <select id="inp-category" class="w-full rounded-lg bg-gray-50 dark:bg-black/20 border border-gray-300 dark:border-white/10 p-2.5 outline-none focus:border-accent-cyan transition dark:text-white">
-                        <option value="Wedding">Wedding</option>
-                        <option value="Portrait">Portrait</option>
-                        <option value="Landscape">Landscape</option>
-                        <option value="Urban">Urban</option>
-                        <option value="Fashion">Fashion</option>
-                        <option value="Retouch">Retouch</option>
-                        <option value="Manipulation">Manipulation</option>
-                        <option value="Color Grade">Color Grade</option>
-                    </select>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <!-- Before -->
-                    <div>
-                        <label class="block text-sm font-medium mb-2 text-gray-600 dark:text-gray-300">Foto Before (Asli)</label>
-                        <div id="dropzone-before" class="drop-zone relative h-48 rounded-xl flex items-center justify-center cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 transition group">
-                            <input type="file" id="dropzone-before-input" class="hidden" accept="image/*">
-                            <div id="placeholder-before" class="text-center p-4">
-                                <i class="fas fa-cloud-upload-alt text-3xl text-gray-400 mb-2 group-hover:text-accent-cyan transition"></i>
-                                <p class="text-xs text-gray-400">Upload / Paste</p>
-                            </div>
-                            <img id="preview-before" class="hidden absolute inset-0 w-full h-full object-cover rounded-xl z-10">
-                            <button type="button" onclick="removeImage('before', event)" class="absolute top-2 right-2 z-20 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center hover:bg-red-600 transition opacity-0 group-hover:opacity-100"><i class="fas fa-times text-xs"></i></button>
-                        </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div onclick="document.getElementById('file-before').click()" class="border-dashed border-2 rounded-xl h-32 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50">
+                        <span class="text-xs text-gray-500">Foto BEFORE (Asli)</span>
+                        <input type="file" id="file-before" class="hidden" accept="image/*" onchange="handleFile(this.files[0], 'before')">
+                        <img id="preview-before" class="h-20 w-20 object-cover mt-2 hidden">
                     </div>
-                    <!-- After -->
-                    <div>
-                        <label class="block text-sm font-medium mb-2 text-gray-600 dark:text-gray-300">Foto After (Edit)</label>
-                        <div id="dropzone-after" class="drop-zone relative h-48 rounded-xl flex items-center justify-center cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 transition group">
-                            <input type="file" id="dropzone-after-input" class="hidden" accept="image/*">
-                            <div id="placeholder-after" class="text-center p-4">
-                                <i class="fas fa-magic text-3xl text-gray-400 mb-2 group-hover:text-accent-purple transition"></i>
-                                <p class="text-xs text-gray-400">Upload / Paste</p>
-                            </div>
-                            <img id="preview-after" class="hidden absolute inset-0 w-full h-full object-cover rounded-xl z-10">
-                            <button type="button" onclick="removeImage('after', event)" class="absolute top-2 right-2 z-20 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center hover:bg-red-600 transition opacity-0 group-hover:opacity-100"><i class="fas fa-times text-xs"></i></button>
-                        </div>
+                    <div onclick="document.getElementById('file-after').click()" class="border-dashed border-2 rounded-xl h-32 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50">
+                        <span class="text-xs text-gray-500">Foto AFTER (Edit)</span>
+                        <input type="file" id="file-after" class="hidden" accept="image/*" onchange="handleFile(this.files[0], 'after')">
+                        <img id="preview-after" class="h-20 w-20 object-cover mt-2 hidden">
                     </div>
                 </div>
-                <div class="pt-4 flex justify-end space-x-3 border-t border-gray-100 dark:border-white/10">
-                    <button type="button" onclick="closeModal()" class="px-5 py-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5 transition">Batal</button>
-                    <button type="submit" id="btn-save" class="px-6 py-2 rounded-lg bg-gradient-to-r from-accent-cyan to-accent-purple text-white font-medium hover:opacity-90 transition shadow-lg shadow-accent-purple/30">Simpan</button>
+                <div class="flex justify-end gap-2 pt-4">
+                    <button type="button" onclick="window.closeModal()" class="px-4 py-2 text-gray-500">Batal</button>
+                    <button type="submit" id="btn-save" class="px-6 py-2 bg-blue-600 text-white rounded-lg">Simpan</button>
                 </div>
             </form>
         </div>
     </div>
 
     <!-- Navbar -->
-    <nav class="fixed w-full z-50 top-0 start-0 border-b border-gray-200 dark:border-white/10 bg-light-base/80 dark:bg-dark-base/80 backdrop-blur-md">
-        <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between p-4">
-            <a href="#" class="flex items-center space-x-2">
-                <div class="w-8 h-8 rounded bg-gradient-to-tr from-accent-cyan to-accent-purple flex items-center justify-center text-white font-bold text-xl">MF</div>
-                <span class="self-center text-2xl font-serif font-semibold whitespace-nowrap tracking-tight">Malik<span class="text-accent-cyan">Faza</span></span>
-            </a>
-            
-            <div class="flex items-center space-x-4">
-                 <!-- Admin Menu in Navbar (Hidden by default) -->
-                <div id="navbar-admin-menu" class="hidden flex items-center space-x-2 mr-2 border-r border-gray-300 dark:border-white/20 pr-4">
-                    <button onclick="openAddModal()" class="text-xs bg-accent-cyan text-white px-3 py-1.5 rounded-full hover:brightness-110 transition flex items-center gap-1">
-                        <i class="fas fa-plus"></i> Tambah
-                    </button>
-                    <button onclick="triggerImport()" class="text-xs text-gray-600 dark:text-gray-300 hover:text-accent-purple transition" title="Import JSON">
-                        <i class="fas fa-file-import"></i>
-                    </button>
-                    <button onclick="exportData()" class="text-xs text-gray-600 dark:text-gray-300 hover:text-accent-purple transition" title="Export JSON">
-                        <i class="fas fa-file-export"></i>
-                    </button>
-                    <!-- Input file hidden -->
-                    <input type="file" id="file-input" class="hidden" accept=".json" onchange="handleFileImport(event)">
+    <nav class="fixed w-full z-50 top-0 bg-white/90 dark:bg-dark-base/90 backdrop-blur border-b dark:border-white/10">
+        <div class="max-w-7xl mx-auto flex justify-between items-center p-4">
+            <div class="text-2xl font-serif font-bold">Malik<span class="text-blue-500">Faza</span></div>
+            <div class="flex items-center gap-4">
+                <!-- Admin Menu -->
+                <div id="admin-menu" class="hidden flex items-center gap-2 border-r pr-4 mr-2">
+                    <button onclick="openAddModal()" class="text-xs bg-blue-600 text-white px-3 py-1 rounded-full">+ Tambah</button>
+                    <button onclick="document.getElementById('json-import').click()" class="text-xs text-gray-500"><i class="fas fa-upload"></i></button>
+                    <button onclick="exportDataJson()" class="text-xs text-gray-500"><i class="fas fa-download"></i></button>
+                    <input type="file" id="json-import" class="hidden" onchange="importDataJson(this.files[0])">
                 </div>
-
-                <button id="admin-toggle-btn" onclick="requestAdmin()" class="text-gray-400 hover:text-accent-cyan transition text-xs" title="Admin Login">
-                    <i class="fas fa-lock"></i>
-                </button>
-
-                <button id="theme-toggle" class="w-10 h-10 rounded-full flex items-center justify-center border border-gray-300 dark:border-white/20 hover:bg-gray-100 dark:hover:bg-white/10 transition">
-                    <i class="fas fa-moon dark:hidden text-gray-600"></i>
-                    <i class="fas fa-sun hidden dark:block text-yellow-400"></i>
-                </button>
-                <a href="https://wa.me/6285161141114" target="_blank" class="hidden md:inline-block px-5 py-2 text-sm font-medium text-white bg-gray-900 dark:bg-white dark:text-black rounded-full hover:opacity-90 transition">Hubungi Saya</a>
+                
+                <button onclick="requestAdmin()" id="btn-admin-lock" class="text-gray-400 hover:text-blue-500"><i class="fas fa-lock"></i></button>
+                <a href="https://wa.me/6285161141114" class="px-4 py-2 bg-black text-white text-sm rounded-full">Kontak</a>
             </div>
         </div>
     </nav>
 
-    <!-- Hero -->
-    <section class="pt-32 pb-16 px-4 relative overflow-hidden">
-        <div class="absolute top-20 left-0 w-72 h-72 bg-accent-cyan/20 rounded-full blur-[100px] pointer-events-none"></div>
-        <div class="absolute bottom-20 right-0 w-96 h-96 bg-accent-purple/20 rounded-full blur-[120px] pointer-events-none"></div>
-
-        <div class="max-w-7xl mx-auto">
-            <div class="text-center mb-12 relative z-10">
-                <h1 class="text-5xl md:text-7xl font-serif font-bold mb-4 tracking-tight">Transforming <span class="text-gradient">Reality</span></h1>
-                <p class="text-lg md:text-xl text-gray-600 dark:text-gray-400 max-w-2xl mx-auto font-light">Jasa Profesional High-End Retouching oleh <b>Malik Faza</b>.</p>
-                <div class="mt-6 flex justify-center items-center space-x-2 text-sm text-gray-500 dark:text-gray-400">
-                    <i class="fas fa-map-marker-alt text-accent-red"></i><span>Majalengka, Indonesia</span>
-                </div>
-            </div>
-
-            <!-- DYNAMIC SLIDERS CONTAINER -->
-            <div id="hero-grid" class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-12">
-                <!-- Placeholder Loading -->
-                <div class="col-span-1 md:col-span-2 text-center text-gray-400 py-20">
-                    <i class="fas fa-spinner fa-spin"></i> Memuat Konten...
-                </div>
-            </div>
+    <!-- Hero Section -->
+    <section class="pt-32 pb-10 px-4">
+        <div class="max-w-7xl mx-auto text-center mb-12">
+            <h1 class="text-5xl font-serif font-bold mb-4">Professional <span class="text-blue-500">Retouching</span></h1>
+            <p class="text-gray-500">Majalengka, Indonesia</p>
+        </div>
+        <div id="hero-grid" class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="text-center py-20 text-gray-400">Loading Hero...</div>
         </div>
     </section>
 
-    <!-- Dynamic Gallery -->
+    <!-- Gallery Section -->
     <section class="py-20 bg-gray-50 dark:bg-black/20">
         <div class="max-w-7xl mx-auto px-4">
-            <h2 class="text-3xl md:text-4xl font-serif font-bold dark:text-white mb-8">Galeri <span class="text-accent-purple">Karya</span></h2>
-            <p class="text-sm text-gray-500 mb-6 -mt-6">Klik gambar untuk melihat foto asli (Before)</p>
-            <div id="gallery-container" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-6 min-h-[200px]">
-                <div class="col-span-full flex justify-center items-center py-20 text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i> Memuat...</div>
+            <h2 class="text-3xl font-serif font-bold mb-2">Galeri Karya</h2>
+            <p class="text-sm text-gray-500 mb-8">Klik gambar untuk melihat Before/After</p>
+            <div id="gallery-container" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="col-span-full text-center py-10 text-gray-400">Loading Gallery...</div>
             </div>
         </div>
     </section>
 
     <!-- Footer -->
-    <footer class="bg-white dark:bg-dark-base border-t border-gray-200 dark:border-white/10 py-8 pb-20 md:pb-8">
-        <div class="max-w-7xl mx-auto px-4 flex justify-between items-center">
-            <div class="flex flex-col">
-                <div class="text-2xl font-serif font-bold">Malik<span class="text-accent-cyan">Faza</span></div>
-                <span class="text-xs text-gray-500">Professional Retoucher</span>
-            </div>
-            <div class="flex items-center space-x-6">
-                <div class="flex space-x-6 text-gray-500">
-                    <a href="#" class="hover:text-green-500"><i class="fab fa-whatsapp text-xl"></i></a>
-                    <a href="#" class="hover:text-accent-purple"><i class="fab fa-instagram text-xl"></i></a>
-                </div>
-            </div>
-        </div>
-        <div class="text-center mt-4 text-sm text-gray-400">&copy; 2024 Malik Faza. All rights reserved.</div>
+    <footer class="py-8 text-center text-gray-500 text-sm border-t dark:border-white/10">
+        &copy; 2024 Malik Faza
     </footer>
 
-    <!-- Slider Script Logic -->
+    <!-- Main Logic -->
     <script>
-        // Theme
-        const html = document.documentElement;
-        if(localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) html.classList.add('dark');
-        document.getElementById('theme-toggle').addEventListener('click', () => {
-            html.classList.toggle('dark');
-            localStorage.setItem('color-theme', html.classList.contains('dark') ? 'dark' : 'light');
-        });
+        // State
+        let isAdmin = false;
+        let editId = null;
+        let tempBefore = "";
+        let tempAfter = "";
 
-        // Improved Slider Logic for Hero Section
-        function initComparisons() {
+        // Global Render Functions (Dipanggil dari Module)
+        window.renderHero = (items) => {
+            const container = document.getElementById('hero-grid');
+            if(!items || items.length === 0) return; // Jangan kosongkan jika data belum siap
+            
+            container.innerHTML = '';
+            items.forEach((item, idx) => {
+                const div = document.createElement('div');
+                div.className = "bg-white dark:bg-dark-card p-1 rounded-2xl shadow-lg relative group";
+                
+                let btn = "";
+                if(isAdmin) {
+                    btn = `<div class="absolute top-4 right-4 z-20 flex gap-2">
+                        <button onclick="openEdit('${item.id||''}', 'hero', '${item.title}', '${item.category}', '${item.before}', '${item.after}', ${item.isStatic||false})" class="bg-blue-600 text-white p-2 rounded text-xs">Edit</button>
+                        ${!item.isStatic ? `<button onclick="deleteItemFirebase('${item.id}')" class="bg-red-600 text-white p-2 rounded text-xs">Hapus</button>` : ''}
+                    </div>`;
+                }
+
+                div.innerHTML = `
+                    ${btn}
+                    <div class="p-2 flex justify-between items-center">
+                        <h3 class="font-serif italic text-xl">${item.title}</h3>
+                        <span class="text-xs font-bold px-2 py-1 bg-blue-100 text-blue-600 rounded">${item.category}</span>
+                    </div>
+                    <div class="img-comp-container h-[400px]">
+                        <div class="img-comp-img w-full">
+                            <img src="${item.after}" alt="After">
+                            <span class="absolute bottom-4 right-4 bg-blue-500/80 text-white px-2 py-1 text-xs rounded">AFTER</span>
+                        </div>
+                        <div class="img-comp-img img-comp-overlay w-full">
+                            <img src="${item.before}" alt="Before">
+                            <span class="absolute bottom-4 left-4 bg-black/50 text-white px-2 py-1 text-xs rounded">BEFORE</span>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+            // Re-init slider
+            setTimeout(initComparisons, 100);
+        };
+
+        window.renderGallery = (items) => {
+            const container = document.getElementById('gallery-container');
+            if(!items || items.length === 0) return;
+            container.innerHTML = '';
+            
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = "click-card relative rounded-xl overflow-hidden h-64 cursor-pointer shadow-md group";
+                div.onclick = function() { this.classList.toggle('active'); };
+
+                let btn = "";
+                if(isAdmin) {
+                    btn = `<div class="absolute top-2 left-2 z-20 flex gap-2" onclick="event.stopPropagation()">
+                        <button onclick="openEdit('${item.id}', 'gallery', '${item.title}', '${item.category}', '${item.before}', '${item.after}')" class="bg-white text-blue-600 p-1 rounded shadow text-xs"><i class="fas fa-edit"></i></button>
+                        <button onclick="deleteItemFirebase('${item.id}')" class="bg-white text-red-600 p-1 rounded shadow text-xs"><i class="fas fa-trash"></i></button>
+                    </div>`;
+                }
+
+                div.innerHTML = `
+                    ${btn}
+                    <div class="absolute inset-0 bg-gray-900">
+                        <img src="${item.after}" class="img-after w-full h-full object-cover">
+                        <img src="${item.before}" class="img-before w-full h-full object-cover absolute top-0 left-0">
+                    </div>
+                    <div class="info-badge absolute bottom-0 left-0 w-full bg-gradient-to-t from-black/80 to-transparent p-3 text-white">
+                        <p class="font-bold text-sm truncate">${item.title}</p>
+                        <p class="text-xs text-blue-300">${item.category}</p>
+                    </div>
+                    <div class="absolute top-2 right-2 bg-black/30 backdrop-blur px-2 py-1 rounded text-[10px] text-white pointer-events-none">
+                        Tap
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        };
+
+        // --- Slider Logic (Global) ---
+        window.initComparisons = () => {
             const overlays = document.getElementsByClassName("img-comp-overlay");
             for (let i = 0; i < overlays.length; i++) {
-                initSlider(overlays[i]);
+                compareImages(overlays[i]);
             }
-        }
+        };
 
-        function initSlider(img) {
-            if(img.classList.contains('initialized')) return;
-            img.classList.add('initialized');
-
+        function compareImages(img) {
+            if(img.classList.contains('init')) return;
+            img.classList.add('init');
+            
             let clicked = 0, w, h;
             const container = img.parentElement;
             
-            const checkDim = setInterval(() => {
+            // Wait for dimensions
+            const check = setInterval(() => {
                 w = container.offsetWidth;
                 h = container.offsetHeight;
-                if (w > 0 && h > 0) {
-                    clearInterval(checkDim);
-                    setupSlider();
+                if(w > 0) {
+                    clearInterval(check);
+                    buildSlider();
                 }
             }, 100);
 
-            function setupSlider() {
+            function buildSlider() {
                 img.style.width = (w / 2) + "px";
                 const innerImg = img.querySelector('img');
                 if(innerImg) { innerImg.style.width = w + "px"; innerImg.style.maxWidth = "none"; }
 
                 const slider = document.createElement("DIV");
-                slider.setAttribute("class", "img-comp-slider");
+                slider.setAttribute("class", "img-comp-slider absolute z-10 w-10 h-10 bg-white rounded-full flex items-center justify-center cursor-ew-resize shadow-lg");
+                slider.innerHTML = "<i class='fas fa-arrows-alt-h text-gray-600'></i>";
                 container.insertBefore(slider, img);
                 
-                slider.style.top = (h / 2) - (slider.offsetHeight / 2) + "px";
-                slider.style.left = (w / 2) - (slider.offsetWidth / 2) + "px";
+                slider.style.top = (h / 2) - 20 + "px";
+                slider.style.left = (w / 2) - 20 + "px";
 
-                const startSlide = (e) => { e.preventDefault(); clicked = 1; window.addEventListener("mousemove", slideMove); window.addEventListener("touchmove", slideMove); }
-                const endSlide = () => { clicked = 0; window.removeEventListener("mousemove", slideMove); window.removeEventListener("touchmove", slideMove); }
+                const start = (e) => { e.preventDefault(); clicked = 1; window.addEventListener("mousemove", move); window.addEventListener("touchmove", move); };
+                const end = () => { clicked = 0; window.removeEventListener("mousemove", move); window.removeEventListener("touchmove", move); };
                 
-                slider.addEventListener("mousedown", startSlide);
-                slider.addEventListener("touchstart", startSlide);
-                window.addEventListener("mouseup", endSlide);
-                window.addEventListener("touchend", endSlide);
+                slider.addEventListener("mousedown", start);
+                slider.addEventListener("touchstart", start);
+                window.addEventListener("mouseup", end);
+                window.addEventListener("touchend", end);
 
-                function slideMove(e) {
+                function move(e) {
                     if (clicked == 0) return false;
-                    let pos = getCursorPos(e);
-                    if (pos < 0) pos = 0;
-                    if (pos > w) pos = w;
-                    slide(pos);
-                }
-
-                function getCursorPos(e) {
-                    let a, x = 0;
-                    e = (e.changedTouches) ? e.changedTouches[0] : e;
-                    a = container.getBoundingClientRect();
-                    x = e.clientX - a.left;
-                    return x;
-                }
-
-                function slide(x) {
+                    let a = container.getBoundingClientRect();
+                    let x = (e.changedTouches ? e.changedTouches[0].pageX : e.pageX) - a.left - window.pageXOffset;
+                    if (x < 0) x = 0;
+                    if (x > w) x = w;
                     img.style.width = x + "px";
-                    slider.style.left = x - (slider.offsetWidth / 2) + "px";
+                    slider.style.left = x - 20 + "px";
                 }
             }
         }
+
+        // --- UI Interactions ---
+        window.requestAdmin = () => document.getElementById('login-modal').classList.remove('hidden');
+        window.closeLoginModal = () => document.getElementById('login-modal').classList.add('hidden');
+        window.closeModal = () => document.getElementById('data-modal').classList.add('hidden');
         
-        let resizeTimer;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => {
-                const overlays = document.getElementsByClassName("img-comp-overlay");
-                for(let img of overlays) {
-                    img.classList.remove('initialized');
-                    const slider = img.parentElement.querySelector('.img-comp-slider');
-                    if(slider) slider.remove();
-                }
-                initComparisons();
-            }, 250);
-        });
+        window.checkLogin = (e) => {
+            e.preventDefault();
+            if(document.getElementById('admin-pass').value === 'malikfaza99') {
+                isAdmin = true;
+                document.getElementById('admin-menu').classList.remove('hidden');
+                document.getElementById('btn-admin-lock').classList.add('text-blue-500');
+                closeLoginModal();
+                showToast("Admin Aktif");
+                // Trigger re-render by reloading current data if available, but simplest is let user click around
+                // Or better, force reload via reload() but that resets state.
+                // We'll rely on the user interacting or next update.
+                // Actually, let's trigger a re-fetch or just re-render with current static data if offline
+                // But better UX:
+                alert("Mode Admin Aktif! Silakan refresh halaman atau tunggu data update.");
+            } else {
+                showToast("Password Salah", "error");
+            }
+        };
+
+        window.openAddModal = () => {
+            editId = null; tempBefore=""; tempAfter="";
+            document.getElementById('modal-title').innerText = "Tambah Foto";
+            document.getElementById('item-form').reset();
+            document.getElementById('inp-section').value = "gallery";
+            resetPreviews();
+            document.getElementById('data-modal').classList.remove('hidden');
+        };
+
+        window.openEdit = (id, section, title, cat, bef, aft, isStatic) => {
+            if(isStatic) { 
+                editId = null; // Save as new
+                showToast("Item statis: Akan disimpan sebagai item baru saat diedit.");
+            } else {
+                editId = id;
+            }
+            document.getElementById('modal-title').innerText = "Edit Foto";
+            document.getElementById('inp-title').value = title;
+            document.getElementById('inp-category').value = cat;
+            document.getElementById('inp-section').value = section;
+            
+            tempBefore = bef; tempAfter = aft;
+            document.getElementById('preview-before').src = bef;
+            document.getElementById('preview-before').classList.remove('hidden');
+            document.getElementById('preview-after').src = aft;
+            document.getElementById('preview-after').classList.remove('hidden');
+            
+            document.getElementById('data-modal').classList.remove('hidden');
+        };
+
+        window.handleFile = (file, type) => {
+            if(!file) return;
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (e) => {
+                // Compress logic simple
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = () => {
+                    const cvs = document.createElement('canvas');
+                    const ctx = cvs.getContext('2d');
+                    let w = img.width, h = img.height;
+                    if(w > 800) { h *= 800/w; w = 800; }
+                    cvs.width = w; cvs.height = h;
+                    ctx.drawImage(img,0,0,w,h);
+                    const res = cvs.toDataURL('image/jpeg', 0.7);
+                    
+                    if(type==='before') { tempBefore = res; document.getElementById('preview-before').src=res; document.getElementById('preview-before').classList.remove('hidden'); }
+                    else { tempAfter = res; document.getElementById('preview-after').src=res; document.getElementById('preview-after').classList.remove('hidden'); }
+                };
+            };
+        };
+
+        function resetPreviews() {
+            document.getElementById('preview-before').classList.add('hidden');
+            document.getElementById('preview-after').classList.add('hidden');
+        }
+
+        window.handleSubmit = (e) => {
+            e.preventDefault();
+            if(!tempBefore || !tempAfter) { showToast("Wajib upload 2 foto!", "error"); return; }
+            
+            const data = {
+                title: document.getElementById('inp-title').value,
+                category: document.getElementById('inp-category').value,
+                section: document.getElementById('inp-section').value,
+                before: tempBefore,
+                after: tempAfter
+            };
+            
+            if(window.saveItemFirebase) window.saveItemFirebase(data, editId);
+        };
+
+        window.onresize = () => setTimeout(initComparisons, 200);
     </script>
 </body>
 </html>
