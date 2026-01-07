@@ -22,12 +22,54 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Configuration ---
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // --- Firebase Configuration & Safety Check ---
+        let firebaseConfig;
+        let appId = 'default-app-id';
+        let isFirebaseActive = false;
+
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                // Config otomatis dari environment editor
+                firebaseConfig = JSON.parse(__firebase_config);
+                if (typeof __app_id !== 'undefined') appId = __app_id;
+                isFirebaseActive = true;
+            } else {
+                // ⚠️ PENTING UNTUK DEPLOYMENT:
+                // Saat dideploy ke Netlify/Vercel, isi bagian ini dengan config dari Firebase Console Anda.
+                // Caranya: Buka Firebase Console > Project Settings > General > Your Apps > SDK Setup
+                firebaseConfig = {
+                    apiKey: "API_KEY_ANDA",
+                    authDomain: "PROJECT_ID.firebaseapp.com",
+                    projectId: "PROJECT_ID",
+                    storageBucket: "PROJECT_ID.firebasestorage.app",
+                    messagingSenderId: "SENDER_ID",
+                    appId: "APP_ID"
+                };
+                
+                // Cek sederhana apakah config sudah diisi user
+                if (firebaseConfig.apiKey !== "API_KEY_ANDA") {
+                    isFirebaseActive = true;
+                } else {
+                    console.warn("Firebase Config belum diisi. Masuk ke Mode Demo (Offline).");
+                }
+            }
+        } catch (e) {
+            console.error("Config Error:", e);
+            isFirebaseActive = false;
+        }
+
+        // Initialize App Only if Config Exists
+        let app, auth, db;
+        if (isFirebaseActive) {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } catch (err) {
+                console.error("Gagal inisialisasi Firebase:", err);
+                isFirebaseActive = false;
+            }
+        }
 
         // Global State
         let currentUser = null;
@@ -42,6 +84,11 @@
 
         // Auth Logic
         const initAuth = async () => {
+            if (!isFirebaseActive) {
+                loadStaticFallback(); // Langsung load data statis jika offline
+                return;
+            }
+
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -50,41 +97,85 @@
                 }
             } catch (error) {
                 console.error("Auth Error:", error);
-                showToast("Gagal koneksi ke server", "error");
+                showToast("Mode Offline (Gagal koneksi database)", "error");
+                loadStaticFallback();
             }
         };
 
         initAuth();
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                setupRealtimeListener();
-            }
-        });
+        if (isFirebaseActive) {
+            onAuthStateChanged(auth, (user) => {
+                currentUser = user;
+                if (user) {
+                    setupRealtimeListener();
+                }
+            });
+        }
 
         // --- Firestore Logic ---
         function setupRealtimeListener() {
-            if (!currentUser) return;
+            if (!currentUser || !isFirebaseActive) return;
             const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
             
+            // Tambahkan timeout agar jika loading macet, fallback muncul
+            const loadTimeout = setTimeout(() => {
+                if (allItems.length === 0) loadStaticFallback();
+            }, 3000);
+
             onSnapshot(colRef, (snapshot) => {
+                clearTimeout(loadTimeout);
                 allItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 
                 // Pisahkan Hero (Slider Atas) dan Gallery (Bawah)
                 const heroItems = allItems.filter(item => item.section === 'hero');
-                const galleryItems = allItems.filter(item => item.section !== 'hero'); // Default ke gallery jika undefined
+                const galleryItems = allItems.filter(item => item.section !== 'hero'); 
 
                 renderHero(heroItems);
                 renderGallery(galleryItems);
             }, (error) => {
                 console.error("Error fetching data:", error);
+                loadStaticFallback();
             });
         }
 
+        // Fungsi Fallback jika Database error/kosong/offline
+        function loadStaticFallback() {
+            console.log("Memuat data statis (Fallback)...");
+            // Data statis agar web tidak kosong saat loading error
+            const staticHero = [
+                {
+                    isStatic: true, title: "Potret Studio", category: "Retouch",
+                    after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop",
+                    before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=800&auto=format&fit=crop"
+                },
+                {
+                    isStatic: true, title: "Urban City", category: "Color Grade",
+                    after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop",
+                    before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=800&auto=format&fit=crop"
+                }
+            ];
+            
+            const staticGallery = [
+                {
+                    title: "Contoh Galeri 1", category: "Wedding",
+                    after: "https://images.unsplash.com/photo-1519741497674-611481863552?q=80&w=800&auto=format&fit=crop",
+                    before: "https://images.unsplash.com/photo-1511285560982-1351cdeb9821?q=80&w=800&auto=format&fit=crop"
+                },
+                {
+                    title: "Contoh Galeri 2", category: "Portrait",
+                    after: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?q=80&w=800&auto=format&fit=crop",
+                    before: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=800&auto=format&fit=crop"
+                }
+            ];
+
+            renderHero(staticHero);
+            renderGallery(staticGallery);
+        }
+
         async function saveItem(data) {
-            if (!currentUser) {
-                showToast("Menunggu koneksi...", "error");
+            if (!isFirebaseActive || !currentUser) {
+                showToast("Mode Demo: Data tidak disimpan ke database.", "error");
                 return;
             }
 
@@ -122,7 +213,11 @@
         }
 
         async function deleteItem(id) {
-            if (!currentUser || !confirm("Yakin ingin menghapus item ini?")) return;
+            if (!isFirebaseActive || !currentUser) {
+                showToast("Mode Demo: Fitur hapus non-aktif.", "error");
+                return;
+            }
+            if (!confirm("Yakin ingin menghapus item ini?")) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_items', id));
                 showToast("Item dihapus.", "success");
@@ -225,6 +320,11 @@
                     const data = JSON.parse(ev.target.result);
                     if (!Array.isArray(data)) throw new Error("Format salah");
                     
+                    if (!isFirebaseActive) {
+                        showToast("Mode Demo: Import hanya simulasi.", "success");
+                        return;
+                    }
+
                     const batch = writeBatch(db);
                     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
                     
@@ -248,28 +348,12 @@
         // 1. Render Hero (Top Sliders)
         function renderHero(items) {
             const container = document.getElementById('hero-grid');
-            
-            // Jika tidak ada data hero di DB, gunakan data statis sebagai placeholder (tapi tetap bisa diedit)
             let displayItems = items;
             
-            // Default static data jika kosong (hanya visual, belum masuk DB)
-            if (items.length === 0) {
-                displayItems = [
-                    {
-                        isStatic: true,
-                        title: "Potret Studio",
-                        category: "Retouch",
-                        after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop",
-                        before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=800&auto=format&fit=crop"
-                    },
-                    {
-                        isStatic: true,
-                        title: "Urban City",
-                        category: "Color Grade",
-                        after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop",
-                        before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=800&auto=format&fit=crop"
-                    }
-                ];
+            if (!items || items.length === 0) {
+                // Jangan kosongkan, biarkan user melihat sesuatu jika data belum siap
+                // Tapi jika ini dipanggil dari loadStaticFallback, items pasti ada isinya
+                if (!isFirebaseActive && items) displayItems = items; 
             }
 
             container.innerHTML = '';
@@ -327,7 +411,6 @@
 
             // Re-init slider logic karena DOM berubah
             setTimeout(() => {
-                // Hapus slider lama jika ada sisa
                 document.querySelectorAll('.img-comp-slider').forEach(e => e.remove());
                 document.querySelectorAll('.img-comp-overlay').forEach(e => e.classList.remove('initialized'));
                 initComparisons();
@@ -339,17 +422,15 @@
             const container = document.getElementById('gallery-container');
             container.innerHTML = '';
 
-            if (items.length === 0) {
+            if (!items || items.length === 0) {
                 container.innerHTML = `<div class="col-span-full text-center py-10 text-gray-400">Belum ada data galeri.</div>`;
                 return;
             }
 
             items.forEach(item => {
                 const card = document.createElement('div');
-                // Tambahkan onclick handler untuk toggle class 'active'
                 card.className = "group relative rounded-xl overflow-hidden cursor-pointer h-48 md:h-64 shadow-lg border border-gray-200 dark:border-white/10 select-none";
                 card.onclick = function() {
-                    // Toggle class active pada kartu ini
                     this.classList.toggle('active');
                 };
                 
