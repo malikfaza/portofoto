@@ -22,107 +22,71 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Configuration & Safety Check ---
-        let firebaseConfig;
-        let appId = 'default-app-id';
-        let isFirebaseActive = false;
+        // --- KONFIGURASI FIREBASE (SUDAH DIISI OTOMATIS) ---
+        // Ini adalah kunci agar database nyambung saat di-deploy
+        const firebaseConfig = {
+            apiKey: "AIzaSyAAHJUfWFvnAnhaPlpzjWFfwmACutmL17c",
+            authDomain: "porto-9b4a4.firebaseapp.com",
+            projectId: "porto-9b4a4",
+            storageBucket: "porto-9b4a4.firebasestorage.app",
+            messagingSenderId: "566977124414",
+            appId: "1:566977124414:web:0040402e6b4837862d196f",
+            measurementId: "G-GQ9LE3M62K"
+        };
 
-        try {
-            if (typeof __firebase_config !== 'undefined') {
-                // 1. Config otomatis (saat di dalam editor Canvas ini)
-                firebaseConfig = JSON.parse(__firebase_config);
-                if (typeof __app_id !== 'undefined') appId = __app_id;
-                isFirebaseActive = true;
-            } else {
-                // 2. Config Manual (saat di-deploy/hosting luar)
-                // Ini KUNCI agar fitur upload berfungsi di Vercel/Netlify/Hosting lain
-                firebaseConfig = {
-                    apiKey: "AIzaSyAAHJUfWFvnAnhaPlpzjWFfwmACutmL17c",
-                    authDomain: "porto-9b4a4.firebaseapp.com",
-                    projectId: "porto-9b4a4",
-                    storageBucket: "porto-9b4a4.firebasestorage.app",
-                    messagingSenderId: "566977124414",
-                    appId: "1:566977124414:web:0040402e6b4837862d196f",
-                    measurementId: "G-GQ9LE3M62K"
-                };
-                // Set aktif karena config manual sudah terisi
-                isFirebaseActive = true;
-            }
-        } catch (e) {
-            console.error("Config Error:", e);
-            isFirebaseActive = false;
-        }
-
-        // Initialize App Only if Config Exists
-        let app, auth, db;
-        if (isFirebaseActive) {
-            try {
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-            } catch (err) {
-                console.error("Gagal inisialisasi Firebase:", err);
-                isFirebaseActive = false;
-            }
-        }
+        // Initialize App
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Gunakan App ID default agar data tidak terpencar
+        const appId = 'default-app-id';
 
         // Global State
         let currentUser = null;
         let isAdminMode = false;
         let isClientLoggedIn = false;
         let currentEditId = null;
-        let allItems = []; // Menyimpan semua item
+        let allItems = []; 
         
-        // Variable untuk menyimpan Base64 sementara
+        // Temp Storage Base64
         let tempBeforeBase64 = "";
         let tempAfterBase64 = "";
 
         // Auth Logic
         const initAuth = async () => {
-            if (!isFirebaseActive) {
-                loadStaticFallback(); // Langsung load data statis jika offline
-                return;
-            }
-
             try {
+                // Coba login dengan token custom jika ada (untuk lingkungan editor)
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
+                    // Login anonim untuk lingkungan deploy
                     await signInAnonymously(auth);
                 }
             } catch (error) {
                 console.error("Auth Error:", error);
-                showToast("Mode Offline (Gagal koneksi database)", "error");
-                loadStaticFallback();
+                showToast("Gagal koneksi database. Cek internet.", "error");
             }
         };
 
         initAuth();
 
-        if (isFirebaseActive) {
-            onAuthStateChanged(auth, (user) => {
-                currentUser = user;
-                if (user) {
-                    setupRealtimeListener();
-                }
-            });
-        }
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                setupRealtimeListener();
+            }
+        });
 
         // --- Firestore Logic ---
         function setupRealtimeListener() {
-            if (!currentUser || !isFirebaseActive) return;
+            if (!currentUser) return;
             const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
             
-            // Tambahkan timeout agar jika loading macet, fallback muncul
-            const loadTimeout = setTimeout(() => {
-                if (allItems.length === 0) loadStaticFallback();
-            }, 3000);
-
             onSnapshot(colRef, (snapshot) => {
-                clearTimeout(loadTimeout);
                 allItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 
-                // Pisahkan Hero (Slider Atas) dan Gallery (Bawah)
+                // Pisahkan Hero (Atas) dan Gallery (Bawah)
                 const heroItems = allItems.filter(item => item.section === 'hero');
                 const galleryItems = allItems.filter(item => item.section !== 'hero'); 
 
@@ -130,53 +94,22 @@
                 renderGallery(galleryItems);
             }, (error) => {
                 console.error("Error fetching data:", error);
-                loadStaticFallback();
+                // Jika error permission atau kosong, tampilkan fallback visual
+                renderHero([]);
+                renderGallery([]);
             });
         }
 
-        // Fungsi Fallback jika Database error/kosong/offline
-        function loadStaticFallback() {
-            console.log("Memuat data statis (Fallback)...");
-            // Data statis agar web tidak kosong saat loading error
-            const staticHero = [
-                {
-                    isStatic: true, title: "Potret Studio", category: "Retouch",
-                    after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop",
-                    before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=800&auto=format&fit=crop"
-                },
-                {
-                    isStatic: true, title: "Urban City", category: "Color Grade",
-                    after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop",
-                    before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=800&auto=format&fit=crop"
-                }
-            ];
-            
-            const staticGallery = [
-                {
-                    title: "Contoh Galeri 1", category: "Wedding",
-                    after: "https://images.unsplash.com/photo-1519741497674-611481863552?q=80&w=800&auto=format&fit=crop",
-                    before: "https://images.unsplash.com/photo-1511285560982-1351cdeb9821?q=80&w=800&auto=format&fit=crop"
-                },
-                {
-                    title: "Contoh Galeri 2", category: "Portrait",
-                    after: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?q=80&w=800&auto=format&fit=crop",
-                    before: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=800&auto=format&fit=crop"
-                }
-            ];
-
-            renderHero(staticHero);
-            renderGallery(staticGallery);
-        }
-
         async function saveItem(data) {
-            if (!isFirebaseActive || !currentUser) {
-                showToast("Mode Demo: Data tidak disimpan ke database.", "error");
+            if (!currentUser) {
+                showToast("Koneksi terputus, refresh halaman.", "error");
                 return;
             }
 
+            // Validasi ukuran (max ~900KB)
             const sizeEstimate = JSON.stringify(data).length;
             if (sizeEstimate > 900000) { 
-                showToast("Ukuran gambar terlalu besar! Gunakan gambar lebih kecil.", "error");
+                showToast("Gambar terlalu besar! Gunakan gambar lain.", "error");
                 return;
             }
 
@@ -189,15 +122,15 @@
 
                 if (currentEditId) {
                     await updateDoc(doc(colRef, currentEditId), data);
-                    showToast("Item berhasil diperbarui!", "success");
+                    showToast("Berhasil diperbarui!", "success");
                 } else {
                     await addDoc(colRef, { ...data, createdAt: Date.now() });
-                    showToast("Item berhasil ditambahkan!", "success");
+                    showToast("Berhasil ditambahkan!", "success");
                 }
                 closeModal();
             } catch (e) {
                 console.error(e);
-                showToast("Gagal menyimpan: " + e.message, "error");
+                showToast("Gagal menyimpan. Coba lagi.", "error");
             } finally {
                 const btn = document.getElementById('btn-save');
                 if(btn) {
@@ -208,11 +141,7 @@
         }
 
         async function deleteItem(id) {
-            if (!isFirebaseActive || !currentUser) {
-                showToast("Mode Demo: Fitur hapus non-aktif.", "error");
-                return;
-            }
-            if (!confirm("Yakin ingin menghapus item ini?")) return;
+            if (!currentUser || !confirm("Yakin hapus item ini?")) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'gallery_items', id));
                 showToast("Item dihapus.", "success");
@@ -221,10 +150,10 @@
             }
         }
 
-        // --- Image Processing ---
+        // --- Image Handler (Resize & Base64) ---
         window.handleFileSelect = (file, type) => {
             if (!file || !file.type.match('image.*')) {
-                showToast("Hanya file gambar yang diperbolehkan!", "error");
+                showToast("Hanya file gambar!", "error");
                 return;
             }
 
@@ -234,9 +163,10 @@
                 const img = new Image();
                 img.src = e.target.result;
                 img.onload = () => {
+                    // Kompresi Gambar
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d');
-                    const MAX_WIDTH = 800; 
+                    const MAX_WIDTH = 800; // Resize ke 800px biar ringan
                     let width = img.width;
                     let height = img.height;
 
@@ -249,6 +179,7 @@
                     canvas.height = height;
                     ctx.drawImage(img, 0, 0, width, height);
 
+                    // Konversi ke JPEG Quality 0.7
                     const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
 
                     if (type === 'before') {
@@ -266,6 +197,7 @@
             };
         };
 
+        // --- UI Setup ---
         window.setupDropZone = (zoneId, type) => {
             const zone = document.getElementById(zoneId);
             const input = document.getElementById(zoneId + '-input');
@@ -298,7 +230,7 @@
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `portfolio_backup_${new Date().toISOString().slice(0,10)}.json`;
+            link.download = `porto_backup_${new Date().toISOString().slice(0,10)}.json`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -315,11 +247,6 @@
                     const data = JSON.parse(ev.target.result);
                     if (!Array.isArray(data)) throw new Error("Format salah");
                     
-                    if (!isFirebaseActive) {
-                        showToast("Mode Demo: Import hanya simulasi.", "success");
-                        return;
-                    }
-
                     const batch = writeBatch(db);
                     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'gallery_items');
                     
@@ -338,17 +265,27 @@
             reader.readAsText(file);
         };
 
-        // --- Render Logic ---
+        // --- Rendering ---
 
-        // 1. Render Hero (Top Sliders)
+        // 1. Render Hero (Top Section)
         function renderHero(items) {
             const container = document.getElementById('hero-grid');
             let displayItems = items;
             
-            if (!items || items.length === 0) {
-                // Jangan kosongkan, biarkan user melihat sesuatu jika data belum siap
-                // Tapi jika ini dipanggil dari loadStaticFallback, items pasti ada isinya
-                if (!isFirebaseActive && items) displayItems = items; 
+            // Placeholder jika kosong (Visual Only)
+            if (items.length === 0) {
+                displayItems = [
+                    {
+                        isStatic: true, title: "Potret Studio", category: "Retouch",
+                        after: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop",
+                        before: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=800&auto=format&fit=crop"
+                    },
+                    {
+                        isStatic: true, title: "Urban City", category: "Color Grade",
+                        after: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop",
+                        before: "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?q=80&w=800&auto=format&fit=crop"
+                    }
+                ];
             }
 
             container.innerHTML = '';
@@ -356,15 +293,12 @@
             displayItems.forEach((item, index) => {
                 const card = document.createElement('div');
                 card.className = "bg-white dark:bg-dark-card border border-gray-200 dark:border-white/10 p-2 rounded-2xl shadow-2xl relative group";
-                
-                // Tentukan warna border gradien (selang-seling)
                 const gradientClass = index % 2 === 0 ? "from-accent-cyan to-accent-purple" : "from-accent-purple to-accent-red";
                 const badgeColor = index % 2 === 0 ? "text-accent-cyan bg-accent-cyan/10" : "text-accent-red bg-accent-red/10";
                 const badgeText = index % 2 === 0 ? "bg-accent-cyan/80" : "bg-accent-red/80";
 
                 let adminControls = '';
                 if (isAdminMode) {
-                    // Jika statis, tombol edit akan trigger 'openStaticHeroEdit'
                     const editAction = item.isStatic ? 
                         `window.openStaticHeroEdit(${index}, '${item.title}', '${item.category}', '${item.before}', '${item.after}')` : 
                         `window.openEditModal('${item.id}', 'hero')`;
@@ -373,12 +307,9 @@
 
                     adminControls = `
                         <div class="absolute top-4 right-4 z-50 flex gap-2">
-                             <button onclick="${editAction}" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded shadow flex items-center gap-1 text-xs">
-                                <i class="fas fa-edit"></i> Edit
-                            </button>
+                             <button onclick="${editAction}" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded shadow flex items-center gap-1 text-xs"><i class="fas fa-edit"></i> Edit</button>
                             ${deleteBtn}
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 card.innerHTML = `
@@ -404,7 +335,7 @@
                 container.appendChild(card);
             });
 
-            // Re-init slider logic karena DOM berubah
+            // Re-init slider
             setTimeout(() => {
                 document.querySelectorAll('.img-comp-slider').forEach(e => e.remove());
                 document.querySelectorAll('.img-comp-overlay').forEach(e => e.classList.remove('initialized'));
@@ -412,12 +343,12 @@
             }, 100);
         }
 
-        // 2. Render Gallery (Bottom Grid) - ONE CLICK INTERACTION
+        // 2. Render Gallery (Bottom Grid)
         function renderGallery(items) {
             const container = document.getElementById('gallery-container');
             container.innerHTML = '';
 
-            if (!items || items.length === 0) {
+            if (items.length === 0) {
                 container.innerHTML = `<div class="col-span-full text-center py-10 text-gray-400">Belum ada data galeri.</div>`;
                 return;
             }
@@ -425,9 +356,7 @@
             items.forEach(item => {
                 const card = document.createElement('div');
                 card.className = "group relative rounded-xl overflow-hidden cursor-pointer h-48 md:h-64 shadow-lg border border-gray-200 dark:border-white/10 select-none";
-                card.onclick = function() {
-                    this.classList.toggle('active');
-                };
+                card.onclick = function() { this.classList.toggle('active'); };
                 
                 let controls = '';
                 if (isAdminMode) {
@@ -441,20 +370,13 @@
                 card.innerHTML = `
                     ${controls}
                     <div class="absolute inset-0 bg-gray-900 gallery-image-container">
-                        <!-- Image After (Default Visible) -->
                         <img src="${item.after || ''}" class="w-full h-full object-cover transition-opacity duration-300 img-after" onerror="this.src='https://via.placeholder.com/400?text=Error'">
-                        
-                        <!-- Image Before (Hidden by default, shown on .active) -->
                         <img src="${item.before || ''}" class="w-full h-full object-cover absolute top-0 left-0 transition-opacity duration-300 opacity-0 img-before" onerror="this.src='https://via.placeholder.com/400?text=Error'">
                     </div>
-                    
-                    <!-- Text Overlay (Hidden when active/showing before) -->
                     <div class="absolute bottom-0 left-0 w-full bg-gradient-to-t from-dark-base to-transparent p-3 translate-y-0 transition duration-300 overlay-info">
                         <p class="text-white text-sm font-bold truncate">${item.title}</p>
                         <p class="text-accent-cyan text-xs">${item.category}</p>
                     </div>
-
-                    <!-- Indikator Tap -->
                     <div class="absolute top-2 right-2 bg-white/10 backdrop-blur px-2 py-1 rounded text-[10px] text-white border border-white/20 pointer-events-none transition-opacity duration-300 status-badge">
                         Tap to Compare
                     </div>
@@ -464,7 +386,6 @@
         }
 
         // --- Admin Functions ---
-        
         window.requestAdmin = () => {
             if (isClientLoggedIn) {
                 window.toggleAdminPanel();
@@ -502,7 +423,6 @@
 
         window.toggleAdminPanel = () => {
             isAdminMode = !isAdminMode;
-            // Update UI di Navbar
             const adminMenu = document.getElementById('navbar-admin-menu');
             const adminToggleBtn = document.getElementById('admin-toggle-btn');
             
@@ -514,33 +434,27 @@
                 adminToggleBtn.classList.remove('text-accent-cyan');
             }
             
-            // Re-render untuk menampilkan tombol edit/delete di kartu
-            // Ambil ulang data terakhir dari local state untuk re-render
+            // Re-render
             const heroItems = allItems.filter(item => item.section === 'hero');
             const galleryItems = allItems.filter(item => item.section !== 'hero');
             renderHero(heroItems);
             renderGallery(galleryItems);
         };
 
-        // --- Modal & Form Handlers ---
-        
-        // Helper: Buka modal untuk item statis (hero default)
+        // --- Modal Helpers ---
         window.openStaticHeroEdit = (index, title, cat, before, after) => {
-            currentEditId = null; // Ini item baru di mata DB
-            
+            currentEditId = null;
             document.getElementById('modal-title').innerText = "Edit Hero Section";
             document.getElementById('inp-title').value = title;
             document.getElementById('inp-category').value = cat;
-            document.getElementById('inp-section').value = 'hero'; // Paksa section Hero
+            document.getElementById('inp-section').value = 'hero';
             
             tempBeforeBase64 = before;
             tempAfterBase64 = after;
             
-            // Karena URL gambar dari unsplash, kita load ke preview
             document.getElementById('preview-before').src = before;
             document.getElementById('preview-before').classList.remove('hidden');
             document.getElementById('placeholder-before').classList.add('hidden');
-            
             document.getElementById('preview-after').src = after;
             document.getElementById('preview-after').classList.remove('hidden');
             document.getElementById('placeholder-after').classList.add('hidden');
@@ -553,7 +467,6 @@
             tempBeforeBase64 = ""; tempAfterBase64 = "";
             document.getElementById('modal-title').innerText = "Tambah Foto";
             document.getElementById('item-form').reset();
-            // Reset select section ke default (gallery)
             document.getElementById('inp-section').value = "gallery";
             resetPreviews();
             document.getElementById('data-modal').classList.remove('hidden');
@@ -567,9 +480,7 @@
             document.getElementById('modal-title').innerText = "Edit Foto";
             document.getElementById('inp-title').value = item.title;
             document.getElementById('inp-category').value = item.category;
-            // Set section select sesuai data
-            const secSelect = document.getElementById('inp-section');
-            secSelect.value = item.section || 'gallery';
+            document.getElementById('inp-section').value = item.section || 'gallery';
             
             tempBeforeBase64 = item.before;
             tempAfterBase64 = item.after;
@@ -617,7 +528,7 @@
             saveItem({
                 title: document.getElementById('inp-title').value,
                 category: document.getElementById('inp-category').value,
-                section: document.getElementById('inp-section').value, // Simpan section
+                section: document.getElementById('inp-section').value,
                 before: tempBeforeBase64,
                 after: tempAfterBase64
             });
@@ -679,19 +590,12 @@
         .drop-zone:hover { background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='10' ry='10' stroke='%2306B6D4' stroke-width='2' stroke-dasharray='6%2c 14' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e"); }
 
         /* ONE CLICK INTERACTION STYLES */
-        /* Default state: After visible, Before hidden */
         .group .img-before { opacity: 0; }
         .group .img-after { opacity: 1; }
-        
-        /* Active state (Clicked): Before visible, After hidden */
         .group.active .img-before { opacity: 1; }
         .group.active .img-after { opacity: 0; }
-        
-        /* Text Overlay & Badge changes on Active */
         .group.active .overlay-info { opacity: 0; pointer-events: none; }
         .group.active .status-badge { content: "Original"; background: rgba(0,0,0,0.6); }
-        /* Trick to change text via CSS not clean, let's stick to opacity change or JS logic. 
-           But simpler: Just toggle opacity of overlay */
     </style>
 </head>
 <body class="bg-light-base text-gray-800 dark:bg-dark-base dark:text-gray-100 transition-colors duration-300">
@@ -723,7 +627,7 @@
                 <button onclick="closeModal()" class="text-gray-400 hover:text-red-500 transition"><i class="fas fa-times text-xl"></i></button>
             </div>
             <form id="item-form" onsubmit="handleSubmit(event)" class="space-y-6">
-                <!-- Select Section: Hidden for user simplicity, but important for logic -->
+                <!-- Select Section: Hidden for user simplicity -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div class="md:col-span-1">
                          <label class="block text-sm font-medium mb-1 text-gray-600 dark:text-gray-300">Tipe Tampilan</label>
@@ -841,7 +745,6 @@
 
             <!-- DYNAMIC SLIDERS CONTAINER -->
             <div id="hero-grid" class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-12">
-                <!-- Javascript will render Hero Cards here -->
                 <!-- Placeholder Loading -->
                 <div class="col-span-1 md:col-span-2 text-center text-gray-400 py-20">
                     <i class="fas fa-spinner fa-spin"></i> Memuat Konten...
