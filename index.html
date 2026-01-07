@@ -29,29 +29,24 @@
 
         try {
             if (typeof __firebase_config !== 'undefined') {
-                // Config otomatis dari environment editor
+                // 1. Config otomatis (saat di dalam editor Canvas ini)
                 firebaseConfig = JSON.parse(__firebase_config);
                 if (typeof __app_id !== 'undefined') appId = __app_id;
                 isFirebaseActive = true;
             } else {
-                // ⚠️ PENTING UNTUK DEPLOYMENT:
-                // Saat dideploy ke Netlify/Vercel, isi bagian ini dengan config dari Firebase Console Anda.
-                // Caranya: Buka Firebase Console > Project Settings > General > Your Apps > SDK Setup
+                // 2. Config Manual (saat di-deploy/hosting luar)
+                // Ini KUNCI agar fitur upload berfungsi di Vercel/Netlify/Hosting lain
                 firebaseConfig = {
-                    apiKey: "API_KEY_ANDA",
-                    authDomain: "PROJECT_ID.firebaseapp.com",
-                    projectId: "PROJECT_ID",
-                    storageBucket: "PROJECT_ID.firebasestorage.app",
-                    messagingSenderId: "SENDER_ID",
-                    appId: "APP_ID"
+                    apiKey: "AIzaSyAAHJUfWFvnAnhaPlpzjWFfwmACutmL17c",
+                    authDomain: "porto-9b4a4.firebaseapp.com",
+                    projectId: "porto-9b4a4",
+                    storageBucket: "porto-9b4a4.firebasestorage.app",
+                    messagingSenderId: "566977124414",
+                    appId: "1:566977124414:web:0040402e6b4837862d196f",
+                    measurementId: "G-GQ9LE3M62K"
                 };
-                
-                // Cek sederhana apakah config sudah diisi user
-                if (firebaseConfig.apiKey !== "API_KEY_ANDA") {
-                    isFirebaseActive = true;
-                } else {
-                    console.warn("Firebase Config belum diisi. Masuk ke Mode Demo (Offline).");
-                }
+                // Set aktif karena config manual sudah terisi
+                isFirebaseActive = true;
             }
         } catch (e) {
             console.error("Config Error:", e);
